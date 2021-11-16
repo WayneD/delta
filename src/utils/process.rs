@@ -123,6 +123,39 @@ fn guess_git_blame_filename_extension(args: &[String]) -> GitBlameExtension {
     }
 }
 
+pub fn git_grep_command_options() -> Option<(HashSet<String>, HashSet<String>)> {
+    // TODO: git_blame_filename_extension is more sophisticated; unify the implementations.
+
+    let mut info = sysinfo::System::new();
+    let my_pid = std::process::id() as Pid;
+
+    // 1) Try the parent process. If delta is set as the pager in git, then git is the parent process.
+    let parent = parent_process(&mut info, my_pid)?;
+    let parent_cmd = parent.cmd().iter().skip_while(|s| *s != "grep");
+    Some(get_command_options(parent_cmd))
+}
+
+// Given `command --aa val -bc -d val e f` return
+// ({"--aa"}, {"-b", "-c", "-d"})
+fn get_command_options<'a>(
+    args: impl Iterator<Item = &'a String>,
+) -> (HashSet<String>, HashSet<String>) {
+    let mut longs = HashSet::new();
+    let mut shorts = HashSet::new();
+
+    for s in args {
+        if s == "--" {
+            break;
+        } else if s.starts_with("--") {
+            longs.insert(s.to_owned());
+        } else if let Some(suffix) = s.strip_prefix('-') {
+            shorts.extend(suffix.chars().map(|c| format!("-{}", c)));
+        }
+    }
+
+    (longs, shorts)
+}
+
 fn parent_process(info: &mut sysinfo::System, my_pid: Pid) -> Option<&Process> {
     info.refresh_process(my_pid).then(|| ())?;
 
@@ -300,5 +333,63 @@ mod tests {
             .cmd()
             .iter()
             .any(|a| a == "test" || a == "tarpaulin"));
+    }
+
+    #[test]
+    fn test_get_command_options() {
+        fn make_string_vec(args: &[&str]) -> Vec<String> {
+            args.iter().map(|&x| x.to_owned()).collect::<Vec<String>>()
+        }
+        fn make_hash_sets(arg1: &[&str], arg2: &[&str]) -> (HashSet<String>, HashSet<String>) {
+            let f = |strs: &[&str]| strs.iter().map(|&s| s.to_owned()).collect();
+            (f(arg1), f(arg2))
+        }
+
+        let args = make_string_vec(&["grep", "hello.txt"]);
+        assert_eq!(get_command_options(args.iter()), make_hash_sets(&[], &[]));
+
+        let args = make_string_vec(&["grep", "--", "--not.an.argument"]);
+        assert_eq!(get_command_options(args.iter()), make_hash_sets(&[], &[]));
+
+        let args = make_string_vec(&[
+            "grep",
+            "-ab",
+            "--function-context",
+            "-n",
+            "--show-function",
+            "-W",
+            "--",
+            "hello.txt",
+        ]);
+        assert_eq!(
+            get_command_options(args.iter()),
+            make_hash_sets(
+                &["--function-context", "--show-function"],
+                &["-a", "-b", "-n", "-W"]
+            )
+        );
+        let args = make_string_vec(&[
+            "grep",
+            "val",
+            "-ab",
+            "val",
+            "--function-context",
+            "val",
+            "-n",
+            "val",
+            "--show-function",
+            "val",
+            "-W",
+            "val",
+            "--",
+            "hello.txt",
+        ]);
+        assert_eq!(
+            get_command_options(args.iter()),
+            make_hash_sets(
+                &["--function-context", "--show-function"],
+                &["-a", "-b", "-n", "-W"]
+            )
+        );
     }
 }
